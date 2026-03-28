@@ -1,0 +1,31 @@
+name: EBOS CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate-python:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+    - name: Run Discrete Event Simulation
+      run: |
+        python3 -m src.main
+
+  validate-c-benchmarks:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install dependencies
+      run: sudo apt-get update && sudo apt-get install -y build-essential
+    - name: Compile and Run C Benchmarks
+      run: |
+        gcc -O3 src/real_test/main.c src/real_test/ebos_core.c -o ebos_bench -lpthread
+        ./ebos_bench
