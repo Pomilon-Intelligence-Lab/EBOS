@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+
+# C
+ebos_bench
+ebos_real_test
+*.o
+*.out
+
+# System
+.DS_Store
+.directory
