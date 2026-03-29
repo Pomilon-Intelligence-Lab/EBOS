@@ -72,6 +72,7 @@ class EBOSServerScheduler:
         self.num_cores = num_cores
         self.runqueues = {i: ServerRunQueue() for i in range(num_cores)}
         self.starvation_threshold = 15.0 
+        self.warm_threshold = 600 # Principled threshold: 60th percentile
         
         self.category_boosts = {
             TaskCategory.INTERACTIVE: 500,
@@ -95,11 +96,11 @@ class EBOSServerScheduler:
         task = rq.pop_highest()
         if task: return task
         
-        # Simple Stealing
+        # Balanced Stealing: Steal if sibling has more than 2 tasks (O(1) check)
         for sibling in cpus:
             if sibling.core_id == cpu.core_id: continue
             s_rq = self.runqueues[sibling.core_id]
-            if s_rq.active_count > 4:
+            if s_rq.active_count > 2:
                 return s_rq.pop_highest()
         return None
 
@@ -121,7 +122,11 @@ class EBOSServerScheduler:
             task.quantum_remaining = self._quantum_for_bucket(task.priority_bucket) + min(10.0, task.energy_credits)
             task.energy_credits = max(0, task.energy_credits - 10.0)
             
-        self.runqueues[task.home_core].add_to_active(task)
+        rq = self.runqueues[task.home_core]
+        if task.interactive_score > self.warm_threshold:
+            rq.add_to_warm(task)
+        else:
+            rq.add_to_active(task)
 
     def on_task_evicted(self, task: Task, current_time: float = 0):
         self._remove_from_queues(task)

@@ -16,26 +16,28 @@ typedef struct {
     Task* buckets[64];
     uint64_t bitmap;
     int task_count;
-    pthread_spinlock_t lock; 
-    
-    // EBOS Desktop specific: Fast-Path (Low Jitter)
     Task* fast_path_head;
     Task* fast_path_tail;
+} EBOS_PrioArray;
+
+typedef struct {
+    EBOS_PrioArray* active;
+    EBOS_PrioArray* expired;
+    EBOS_PrioArray arrays[2];
+    pthread_spinlock_t lock;
 } EBOS_RunQueue;
 
-static EBOS_RunQueue core_active_rq[MAX_CORES];
-static EBOS_RunQueue core_expired_rq[MAX_CORES];
+static EBOS_RunQueue core_rqs[MAX_CORES];
 static int num_system_cores = 4;
 static bool desktop_mode = false;
 
 void init_ebos(int cores) {
     num_system_cores = cores;
     for (int i = 0; i < cores; i++) {
-        memset(&core_active_rq[i], 0, sizeof(EBOS_RunQueue));
-        pthread_spin_init(&core_active_rq[i].lock, PTHREAD_PROCESS_PRIVATE);
-        
-        memset(&core_expired_rq[i], 0, sizeof(EBOS_RunQueue));
-        pthread_spin_init(&core_expired_rq[i].lock, PTHREAD_PROCESS_PRIVATE);
+        memset(&core_rqs[i], 0, sizeof(EBOS_RunQueue));
+        core_rqs[i].active = &core_rqs[i].arrays[0];
+        core_rqs[i].expired = &core_rqs[i].arrays[1];
+        pthread_spin_init(&core_rqs[i].lock, PTHREAD_PROCESS_PRIVATE);
     }
 }
 
@@ -47,110 +49,87 @@ int get_best_core() {
     int best = 0;
     int min_tasks = 99999;
     for (int i = 0; i < num_system_cores; i++) {
-        if (core_active_rq[i].task_count < min_tasks) {
-            min_tasks = core_active_rq[i].task_count;
+        if (core_rqs[i].active->task_count < min_tasks) {
+            min_tasks = core_rqs[i].active->task_count;
             best = i;
         }
     }
     return best;
 }
 
-void add_to_core_rq(EBOS_RunQueue* rq, Task* task) {
-    pthread_spin_lock(&rq->lock);
-    
+void _add_to_array(EBOS_PrioArray* array, Task* task) {
     // Fast-Path for Desktop mode
     if (desktop_mode && (task->category == CAT_INTERACTIVE || task->category == CAT_REALTIME)) {
         task->next = NULL;
-        if (rq->fast_path_tail) {
-            rq->fast_path_tail->next = task;
-            rq->fast_path_tail = task;
+        if (array->fast_path_tail) {
+            array->fast_path_tail->next = task;
+            array->fast_path_tail = task;
         } else {
-            rq->fast_path_head = rq->fast_path_tail = task;
+            array->fast_path_head = array->fast_path_tail = task;
         }
-        pthread_spin_unlock(&rq->lock);
         return;
     }
 
     int b = task->priority_bucket;
-    Task** curr = &rq->buckets[b];
+    Task** curr = &array->buckets[b];
     while (*curr && (*curr)->vruntime_residual < task->vruntime_residual) {
         curr = &(*curr)->next;
     }
     task->next = *curr;
     *curr = task;
-    rq->bitmap |= (1ULL << b);
-    rq->task_count++;
-    pthread_spin_unlock(&rq->lock);
-}
-
-Task* pop_from_core_rq(EBOS_RunQueue* rq) {
-    pthread_spin_lock(&rq->lock);
-    
-    // Fast-Path Priority for Desktop mode
-    if (desktop_mode && rq->fast_path_head) {
-        Task* t = rq->fast_path_head;
-        rq->fast_path_head = t->next;
-        if (!rq->fast_path_head) rq->fast_path_tail = NULL;
-        pthread_spin_unlock(&rq->lock);
-        return t;
-    }
-
-    if (rq->bitmap == 0) {
-        pthread_spin_unlock(&rq->lock);
-        return NULL;
-    }
-    int b = __builtin_ctzll(rq->bitmap);
-    Task* task = rq->buckets[b];
-    if (task) {
-        rq->buckets[b] = task->next;
-        if (!rq->buckets[b]) rq->bitmap &= ~(1ULL << b);
-        rq->task_count--;
-    }
-    pthread_spin_unlock(&rq->lock);
-    return task;
-}
-
-Task* ebos_pick_next_smp(int core_id) {
-    Task* t = pop_from_core_rq(&core_active_rq[core_id]);
-    if (t) return t;
-
-    if (core_expired_rq[core_id].task_count > 0 || core_expired_rq[core_id].fast_path_head != NULL) {
-        pthread_spin_lock(&core_active_rq[core_id].lock);
-        pthread_spin_lock(&core_expired_rq[core_id].lock);
-        
-        for (int i = 0; i < 64; i++) {
-            Task* tmp = core_active_rq[core_id].buckets[i];
-            core_active_rq[core_id].buckets[i] = core_expired_rq[core_id].buckets[i];
-            core_expired_rq[core_id].buckets[i] = tmp;
-        }
-        
-        Task* tmp_h = core_active_rq[core_id].fast_path_head;
-        core_active_rq[core_id].fast_path_head = core_expired_rq[core_id].fast_path_head;
-        core_expired_rq[core_id].fast_path_head = tmp_h;
-        
-        Task* tmp_t = core_active_rq[core_id].fast_path_tail;
-        core_active_rq[core_id].fast_path_tail = core_expired_rq[core_id].fast_path_tail;
-        core_expired_rq[core_id].fast_path_tail = tmp_t;
-
-        uint64_t tmp_bm = core_active_rq[core_id].bitmap;
-        core_active_rq[core_id].bitmap = core_expired_rq[core_id].bitmap;
-        core_expired_rq[core_id].bitmap = tmp_bm;
-        
-        int tmp_count = core_active_rq[core_id].task_count;
-        core_active_rq[core_id].task_count = core_expired_rq[core_id].task_count;
-        core_expired_rq[core_id].task_count = tmp_count;
-        
-        pthread_spin_unlock(&core_expired_rq[core_id].lock);
-        pthread_spin_unlock(&core_active_rq[core_id].lock);
-        return pop_from_core_rq(&core_active_rq[core_id]);
-    }
-    return NULL;
+    array->bitmap |= (1ULL << b);
+    array->task_count++;
 }
 
 void ebos_requeue(Task* t, bool expired) {
     if (t->home_core == -1) t->home_core = get_best_core();
-    if (expired) add_to_core_rq(&core_expired_rq[t->home_core], t);
-    else add_to_core_rq(&core_active_rq[t->home_core], t);
+    EBOS_RunQueue* rq = &core_rqs[t->home_core];
+    
+    pthread_spin_lock(&rq->lock);
+    if (expired) _add_to_array(rq->expired, t);
+    else _add_to_array(rq->active, t);
+    pthread_spin_unlock(&rq->lock);
+}
+
+Task* _pop_from_array(EBOS_PrioArray* array) {
+    if (desktop_mode && array->fast_path_head) {
+        Task* t = array->fast_path_head;
+        array->fast_path_head = t->next;
+        if (!array->fast_path_head) array->fast_path_tail = NULL;
+        return t;
+    }
+
+    if (array->bitmap == 0) return NULL;
+    int b = __builtin_ctzll(array->bitmap);
+    Task* task = array->buckets[b];
+    if (task) {
+        array->buckets[b] = task->next;
+        if (!array->buckets[b]) array->bitmap &= ~(1ULL << b);
+        array->task_count--;
+    }
+    return task;
+}
+
+Task* ebos_pick_next_smp(int core_id) {
+    EBOS_RunQueue* rq = &core_rqs[core_id];
+    pthread_spin_lock(&rq->lock);
+    
+    Task* t = _pop_from_array(rq->active);
+    if (t) {
+        pthread_spin_unlock(&rq->lock);
+        return t;
+    }
+
+    // Swap pointers if expired has tasks
+    if (rq->expired->task_count > 0 || rq->expired->fast_path_head != NULL) {
+        EBOS_PrioArray* tmp = rq->active;
+        rq->active = rq->expired;
+        rq->expired = tmp;
+        t = _pop_from_array(rq->active);
+    }
+    
+    pthread_spin_unlock(&rq->lock);
+    return t;
 }
 
 // Baseline implementations (MLFQ, CFS, RR)

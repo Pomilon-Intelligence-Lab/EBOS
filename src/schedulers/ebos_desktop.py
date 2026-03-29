@@ -23,21 +23,22 @@ class EBOSDesktopScheduler(EBOSServerScheduler):
         super().__init__(num_cores)
         self.runqueues = {i: DesktopRunQueue() for i in range(num_cores)}
         self.starvation_threshold = 10.0 # Faster swap for Desktop
+        self.warm_threshold = 600
 
     def pick_next_task(self, cpu: CPU, cpus: List[CPU], current_time: float = 0) -> Optional[Task]:
         rq = self.runqueues[cpu.core_id]
-        # Custom swap check for Desktop (include fast_path)
         if rq.active_count == 0 and rq.warm_count == 0 and not rq.fast_path:
             rq.swap_if_needed(current_time, self.starvation_threshold)
             
         task = rq.pop_highest()
         if task: return task
         
-        # Aggressive Stealing for Desktop
+        # Fixed Stealing: Must check fast_path specifically for v1.0.0
         for sibling in cpus:
             if sibling.core_id == cpu.core_id: continue
             s_rq = self.runqueues[sibling.core_id]
-            if s_rq.active_count > 1 or s_rq.fast_path:
+            # Steal if sibling has fast_path tasks or more than 1 active task
+            if s_rq.fast_path or s_rq.active_count > 1:
                 return s_rq.pop_highest()
         return None
 
