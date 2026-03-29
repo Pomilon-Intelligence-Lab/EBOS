@@ -2,6 +2,8 @@
 
 EBOS is a high-performance, Symmetric Multiprocessing (SMP) scheduler that abandons O(log N) tree-based balancing in favor of deterministic, bitmask-driven bucket queues. By prioritizing hardware-level efficiency and behavioral profiling, EBOS delivers sub-millisecond jitter for interactive workloads while maintaining superior throughput for batch processing.
 
+> Note: these are controlled benchmark environment, not representative of full kernel-level behavior.
+
 ---
 
 ## Architectural Philosophy
