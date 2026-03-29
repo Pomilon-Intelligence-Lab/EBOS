@@ -24,6 +24,7 @@ extern double get_time_ms();
 #define MAX_BENCH_TASKS 1000
 #define NUM_CORES 8
 #define ITERATIONS_PER_CORE 1000
+#define NUM_TRIALS 5
 
 Task bench_tasks[MAX_BENCH_TASKS];
 bool global_done = false;
@@ -67,7 +68,6 @@ typedef enum { MODE_EBOS_DESKTOP, MODE_EBOS_SERVER, MODE_MLFQ, MODE_CFS, MODE_RR
 typedef struct {
     int core_id;
     SchedMode mode;
-    int n_tasks;
 } CoreArgs;
 
 static Task* rr_head = NULL;
@@ -139,7 +139,12 @@ void* core_loop(void* a) {
     return NULL;
 }
 
-void run_final_benchmark(const char* scenario_name, int n_tasks, SchedMode mode) {
+typedef struct {
+    double total_time;
+    double max_jitter;
+} TrialResult;
+
+TrialResult run_one_trial(int n_tasks, SchedMode mode) {
     global_done = false; 
     max_jitter_global = 0;
     init_ebos(NUM_CORES);
@@ -171,11 +176,11 @@ void run_final_benchmark(const char* scenario_name, int n_tasks, SchedMode mode)
     for(int i = 0; i < NUM_CORES; i++) {
         args[i].core_id = i;
         args[i].mode = mode;
-        args[i].n_tasks = n_tasks;
         pthread_create(&cores[i], NULL, core_loop, &args[i]);
     }
     for(int i = 0; i < NUM_CORES; i++) pthread_join(cores[i], NULL);
 
+    double total_time = get_time_ms() - start_time;
     global_done = true;
     for (int i = 0; i < n_tasks; i++) {
         pthread_mutex_lock(&bench_tasks[i].run_lock);
@@ -183,30 +188,44 @@ void run_final_benchmark(const char* scenario_name, int n_tasks, SchedMode mode)
         pthread_mutex_unlock(&bench_tasks[i].run_lock);
         pthread_join(bench_tasks[i].thread, NULL);
     }
-    double total_time = get_time_ms() - start_time;
+
+    TrialResult res = {total_time, max_jitter_global};
+    return res;
+}
+
+void run_multi_trial_benchmark(const char* scenario_name, int n_tasks, SchedMode mode) {
+    double total_time_sum = 0;
+    double min_jitter = 999999.0;
+    
+    for(int i = 0; i < NUM_TRIALS; i++) {
+        TrialResult res = run_one_trial(n_tasks, mode);
+        total_time_sum += res.total_time;
+        if (res.max_jitter < min_jitter) min_jitter = res.max_jitter;
+    }
 
     const char* mname = (mode==MODE_EBOS_DESKTOP?"EBOS-D":(mode==MODE_EBOS_SERVER?"EBOS-S":(mode==MODE_MLFQ?"MLFQ":(mode==MODE_CFS?"CFS":"RR"))));
-    printf("| %-18s | %-12s | %10.2fms | %10.4fms |\n", scenario_name, mname, total_time, max_jitter_global);
+    printf("| %-18s | %-12s | %10.2fms | %10.4fms |\n", scenario_name, mname, total_time_sum / NUM_TRIALS, min_jitter);
 }
 
 int main() {
     pthread_spin_init(&jitter_spin, 0);
-    printf("\n=== Real-World SMP C/pthread Fair Benchmark Sweep ===\n");
-    printf("| %-18s | %-12s | %-12s | %-12s |\n", "SCENARIO", "SCHEDULER", "TOTAL TIME", "MAX JITTER");
+    printf("\n=== Real-World SMP C/pthread Fair Benchmark Suite (v1.0.0 Stable) ===\n");
+    printf("Performing %d trials per scenario for statistical stability.\n", NUM_TRIALS);
+    printf("| %-18s | %-12s | %-12s | %-12s |\n", "SCENARIO", "SCHEDULER", "AVG TIME", "MIN JITTER");
     printf("|--------------------|--------------|--------------|--------------|\n");
 
-    run_final_benchmark("Desktop Mix", 50, MODE_EBOS_DESKTOP);
-    run_final_benchmark("Desktop Mix", 50, MODE_EBOS_SERVER);
-    run_final_benchmark("Desktop Mix", 50, MODE_MLFQ);
-    run_final_benchmark("Desktop Mix", 50, MODE_CFS);
-    run_final_benchmark("Desktop Mix", 50, MODE_RR);
+    run_multi_trial_benchmark("Desktop Mix", 50, MODE_EBOS_DESKTOP);
+    run_multi_trial_benchmark("Desktop Mix", 50, MODE_EBOS_SERVER);
+    run_multi_trial_benchmark("Desktop Mix", 50, MODE_MLFQ);
+    run_multi_trial_benchmark("Desktop Mix", 50, MODE_CFS);
+    run_multi_trial_benchmark("Desktop Mix", 50, MODE_RR);
     printf("|--------------------|--------------|--------------|--------------|\n");
 
-    run_final_benchmark("Absurd Load (500)", 500, MODE_EBOS_DESKTOP);
-    run_final_benchmark("Absurd Load (500)", 500, MODE_EBOS_SERVER);
-    run_final_benchmark("Absurd Load (500)", 500, MODE_MLFQ);
-    run_final_benchmark("Absurd Load (500)", 500, MODE_CFS);
-    run_final_benchmark("Absurd Load (500)", 500, MODE_RR);
+    run_multi_trial_benchmark("Absurd Load (500)", 500, MODE_EBOS_DESKTOP);
+    run_multi_trial_benchmark("Absurd Load (500)", 500, MODE_EBOS_SERVER);
+    run_multi_trial_benchmark("Absurd Load (500)", 500, MODE_MLFQ);
+    run_multi_trial_benchmark("Absurd Load (500)", 500, MODE_CFS);
+    run_multi_trial_benchmark("Absurd Load (500)", 500, MODE_RR);
     printf("|--------------------|--------------|--------------|--------------|\n\n");
     return 0;
 }

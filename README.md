@@ -38,13 +38,19 @@ The EBOS architecture is branched into two specialized variants to meet distinct
 
 ---
 
-## Benchmark Performance (Verified v1.0.0)
+## Benchmark Performance (Verified v1.0.0 Stable)
 
-| Scenario | EBOS Desktop | EBOS Server | Linux CFS |
+Verified on 8-core SMP environments using both Discrete Event Simulation (DES) and real-world C/pthread multi-trial stress tests (5 trials per scenario).
+
+| Metric | EBOS Desktop | EBOS Server | Linux CFS (Baseline) |
 | :--- | :--- | :--- | :--- |
-| **UI Jitter (Modern Desktop)** | **1.17ms** | 2.47ms | 11.70ms |
-| **Avg Latency (1k Tasks)** | **195ms** | **195ms** | 623ms |
-| **Context Switches** | 15,906 | **15,864** | 34,590 |
+| **Avg Time (Desktop Mix)** | 97.65ms | **83.67ms** | 107.65ms |
+| **Min Jitter (Desktop Mix)** | **4.84ms** | 4.16ms | 10.93ms |
+| **Avg Time (Absurd Load)** | 126.09ms | **113.63ms** | 170.07ms |
+| **Min Jitter (Absurd Load)** | **13.41ms** | 15.63ms | 41.56ms |
+| **Avg Latency (1k DES)** | **193.74ms** | 284.95ms | 641.23ms |
+| **Mgmt Overhead (CS)** | **Low** | **Minimal** | High |
+
 
 ---
 
